@@ -264,21 +264,23 @@ def imputation_rmse(clean_data, imputed_data, missing_mask):
     
     return metrics
 
-def imputation_ce_rmse(clean_data, imputed_data, missing_mask, column_types):
+def custom_imputation_error_onehot(clean_data, imputed_data, missing_mask, column_types, onehot_indices):
     """
-    Calculate a weighted error metric for imputed values, combining cross-entropy for categorical columns
-    and RMSE for numerical columns.
+    Calculate a weighted error metric for imputed values with one-hot encoding for categorical columns.
     
     Parameters:
     -----------
     clean_data : numpy.ndarray
-        The original, complete dataset.
+        The original, complete dataset (in one-hot format for categorical columns).
     imputed_data : numpy.ndarray
-        The dataset after imputation.
+        The dataset after imputation (in one-hot format for categorical columns).
     missing_mask : numpy.ndarray
         Mask indicating missing values in the original dataset.
     column_types : list of str
-        List indicating the type of each column: 'categorical' or 'numerical'.
+        List indicating the type of each original column: 'categorical' or 'numerical'.
+    onehot_indices : dict
+        A dictionary where keys are the indices of categorical columns in the original dataset,
+        and values are the indices of their corresponding one-hot-encoded columns.
     
     Returns:
     --------
@@ -290,16 +292,12 @@ def imputation_ce_rmse(clean_data, imputed_data, missing_mask, column_types):
         raise ValueError("Clean and imputed datasets must have the same shape")
     
     missing_mask = missing_mask.astype(bool)
-    n_cols = clean_data.shape[1]
+    n_cols = len(column_types)
     
-    # Separate categorical and numerical columns
-    cat_indices = [i for i, t in enumerate(column_types) if t == 'categorical']
-    num_indices = [i for i, t in enumerate(column_types) if t == 'numerical']
+    # Separate weights for categorical and numerical columns
+    n_cat = sum(1 for t in column_types if t == 'categorical')
+    n_num = sum(1 for t in column_types if t == 'numerical')
     
-    n_cat = len(cat_indices)
-    n_num = len(num_indices)
-    
-    # Weights
     total_columns = n_cat + n_num
     w_cat = n_cat / total_columns if n_cat > 0 else 0
     w_num = n_num / total_columns if n_num > 0 else 0
@@ -307,21 +305,24 @@ def imputation_ce_rmse(clean_data, imputed_data, missing_mask, column_types):
     # Cross-entropy for categorical columns
     ce = 0
     if n_cat > 0:
-        cat_clean = clean_data[:, cat_indices]
-        cat_imputed = imputed_data[:, cat_indices]
-        cat_missing_mask = missing_mask[:, cat_indices]
-        
-        for i in range(n_cat):
-            clean = cat_clean[cat_missing_mask[:, i], i]
-            imputed = cat_imputed[cat_missing_mask[:, i], i]
-            if clean.size > 0:
-                # Use log_loss for cross-entropy (requires one-hot or probability input for imputed data)
-                ce += log_loss(clean, imputed, labels=np.unique(clean))
+        for col_idx, onehot_range in onehot_indices.items():
+            # Get indices for one-hot encoded columns
+            onehot_cols = onehot_range
+            cat_clean = clean_data[:, onehot_cols]
+            cat_imputed = imputed_data[:, onehot_cols]
+            cat_missing_mask = missing_mask[:, onehot_cols[0]]  # Check first column in one-hot range
+            
+            # Filter rows with missing values
+            if np.any(cat_missing_mask):
+                clean_rows = cat_clean[cat_missing_mask]
+                imputed_rows = cat_imputed[cat_missing_mask]
+                ce += log_loss(clean_rows, imputed_rows)
         ce /= n_cat  # Average cross-entropy across categorical columns
     
     # RMSE for numerical columns
     rmse = 0
     if n_num > 0:
+        num_indices = [i for i, t in enumerate(column_types) if t == 'numerical']
         num_clean = clean_data[:, num_indices]
         num_imputed = imputed_data[:, num_indices]
         num_missing_mask = missing_mask[:, num_indices]
