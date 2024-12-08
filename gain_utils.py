@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import log_loss
 import tensorflow as tf
 
 
@@ -179,6 +180,44 @@ def sample_batch_index(total, batch_size):
   batch_idx = total_idx[:batch_size]
   return batch_idx
 
+def missing_method(raw_data, mechanism='mcar', method='uniform', missing_threshold=0.2, random_state=None):
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    data = raw_data.copy()
+    rows, cols = data.shape
+    t = missing_threshold
+
+    if mechanism == 'mcar':
+        v = np.random.uniform(size=(rows, cols))
+        if method == 'uniform':
+            mask = v <= t
+        elif method == 'random':
+            c = np.zeros(cols, dtype=bool)
+            c[np.random.choice(cols, cols // 2, replace=False)] = True
+            mask = (v <= t) & c[np.newaxis, :]
+        else:
+            raise ValueError(f"Unknown method: {method}")
+    elif mechanism == 'mnar':
+        sample_cols = np.random.choice(cols, 2, replace=False)
+        m1, m2 = np.median(data[:, sample_cols], axis=0)
+        v = np.random.uniform(size=(rows, cols))
+        m = (data[:, sample_cols[0]] <= m1) & (data[:, sample_cols[1]] >= m2)
+        mask = v <= t
+        if method == 'uniform':
+            mask &= m[:, np.newaxis]
+        elif method == 'random':
+            c = np.zeros(cols, dtype=bool)
+            c[np.random.choice(cols, cols // 2, replace=False)] = True
+            mask &= m[:, np.newaxis] & c[np.newaxis, :]
+        else:
+            raise ValueError(f"Unknown method: {method}")
+    else:
+        raise ValueError(f"Unknown mechanism: {mechanism}")
+
+    data[mask] = np.nan
+    return data, mask
+
 def imputation_rmse(clean_data, imputed_data, missing_mask):
     """
     Calculate Root Mean Square Error (RMSE) for imputed values
@@ -223,7 +262,82 @@ def imputation_rmse(clean_data, imputed_data, missing_mask):
         'std_error': np.std(errors)
     }
     
-    return rmse, metrics
+    return metrics
+
+def imputation_ce_rmse(clean_data, imputed_data, missing_mask, column_types):
+    """
+    Calculate a weighted error metric for imputed values, combining cross-entropy for categorical columns
+    and RMSE for numerical columns.
+    
+    Parameters:
+    -----------
+    clean_data : numpy.ndarray
+        The original, complete dataset.
+    imputed_data : numpy.ndarray
+        The dataset after imputation.
+    missing_mask : numpy.ndarray
+        Mask indicating missing values in the original dataset.
+    column_types : list of str
+        List indicating the type of each column: 'categorical' or 'numerical'.
+    
+    Returns:
+    --------
+    dict
+        Combined weighted error and individual errors.
+    """
+    # Validate input
+    if clean_data.shape != imputed_data.shape:
+        raise ValueError("Clean and imputed datasets must have the same shape")
+    
+    missing_mask = missing_mask.astype(bool)
+    n_cols = clean_data.shape[1]
+    
+    # Separate categorical and numerical columns
+    cat_indices = [i for i, t in enumerate(column_types) if t == 'categorical']
+    num_indices = [i for i, t in enumerate(column_types) if t == 'numerical']
+    
+    n_cat = len(cat_indices)
+    n_num = len(num_indices)
+    
+    # Weights
+    total_columns = n_cat + n_num
+    w_cat = n_cat / total_columns if n_cat > 0 else 0
+    w_num = n_num / total_columns if n_num > 0 else 0
+    
+    # Cross-entropy for categorical columns
+    ce = 0
+    if n_cat > 0:
+        cat_clean = clean_data[:, cat_indices]
+        cat_imputed = imputed_data[:, cat_indices]
+        cat_missing_mask = missing_mask[:, cat_indices]
+        
+        for i in range(n_cat):
+            clean = cat_clean[cat_missing_mask[:, i], i]
+            imputed = cat_imputed[cat_missing_mask[:, i], i]
+            if clean.size > 0:
+                # Use log_loss for cross-entropy (requires one-hot or probability input for imputed data)
+                ce += log_loss(clean, imputed, labels=np.unique(clean))
+        ce /= n_cat  # Average cross-entropy across categorical columns
+    
+    # RMSE for numerical columns
+    rmse = 0
+    if n_num > 0:
+        num_clean = clean_data[:, num_indices]
+        num_imputed = imputed_data[:, num_indices]
+        num_missing_mask = missing_mask[:, num_indices]
+        
+        errors = num_clean[num_missing_mask] - num_imputed[num_missing_mask]
+        rmse = np.sqrt(np.mean(errors**2))
+    
+    # Weighted sum of errors
+    weighted_error = w_cat * ce + w_num * rmse
+    
+    return {
+        'weighted_error': weighted_error,
+        'categorical_error': ce,
+        'numerical_error': rmse,
+        'weights': {'categorical': w_cat, 'numerical': w_num}
+    }
 
 
 
