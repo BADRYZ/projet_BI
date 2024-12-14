@@ -1,7 +1,9 @@
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import log_loss
 import tensorflow as tf
+import warnings
 
 
 def normalization (data, parameters=None):
@@ -180,43 +182,63 @@ def sample_batch_index(total, batch_size):
   batch_idx = total_idx[:batch_size]
   return batch_idx
 
-def missing_method(raw_data, mechanism='mcar', method='uniform', missing_threshold=0.2, random_state=None):
-    if random_state is not None:
-        np.random.seed(random_state)
+def MCAR2unifo(inputX, mr):
+    """
+    Generate MCAR (Missing Completely At Random) data by introducing missing values 
+    into the input matrix at a given missing rate.
 
-    data = raw_data.copy()
-    rows, cols = data.shape
-    t = missing_threshold
+    Parameters:
+        inputX (ndarray): Matrix of data (n patterns x p features)
+        mr (float): Desired missing rate (percentage, 0-100)
 
-    if mechanism == 'mcar':
-        v = np.random.uniform(size=(rows, cols))
-        if method == 'uniform':
-            mask = v <= t
-        elif method == 'random':
-            c = np.zeros(cols, dtype=bool)
-            c[np.random.choice(cols, cols // 2, replace=False)] = True
-            mask = (v <= t) & c[np.newaxis, :]
-        else:
-            raise ValueError(f"Unknown method: {method}")
-    elif mechanism == 'mnar':
-        sample_cols = np.random.choice(cols, 2, replace=False)
-        m1, m2 = np.median(data[:, sample_cols], axis=0)
-        v = np.random.uniform(size=(rows, cols))
-        m = (data[:, sample_cols[0]] <= m1) & (data[:, sample_cols[1]] >= m2)
-        mask = v <= t
-        if method == 'uniform':
-            mask &= m[:, np.newaxis]
-        elif method == 'random':
-            c = np.zeros(cols, dtype=bool)
-            c[np.random.choice(cols, cols // 2, replace=False)] = True
-            mask &= m[:, np.newaxis] & c[np.newaxis, :]
-        else:
-            raise ValueError(f"Unknown method: {method}")
-    else:
-        raise ValueError(f"Unknown mechanism: {mechanism}")
+    Returns:
+        ndarray: Matrix with missing values introduced (NaN)
 
-    data[mask] = np.nan
-    return data, mask
+    References:
+        Garciarena, Unai, and Roberto Santana. "An extensive analysis of the interaction between missing data types, 
+        imputation methods, and supervised classifiers." Expert Systems with Applications 89 (2017): 52-65.
+    """
+    outputX = inputX.copy()
+
+    # Determine dimensions
+    n, p = outputX.shape
+
+    # Calculate total number of elements to make missing
+    T = int(round(n * p * mr / 100))
+
+    # Randomly select T unique indices from the flattened array
+    indices = np.random.choice(n * p, T, replace=False)
+
+    # Flatten the array for easier indexing
+    flat_array = outputX.ravel()
+    
+    # Set the selected indices to NaN
+    flat_array[indices] = np.nan
+    
+    # Reshape back to original shape
+    outputX = flat_array.reshape((n, p))
+
+    # Define threshold
+    thresh = 1
+
+    try:
+        nFeaturesRisk = np.sum(np.sum(np.isnan(outputX), axis=0) >= n - thresh)
+    except TypeError:
+        nFeaturesRisk = 0
+    
+    # Check for patterns with all values (or almost all) missing
+    try:
+        nPatternsRisk = np.sum(np.sum(np.isnan(outputX), axis=1) >= p - thresh)
+    except TypeError:
+        nPatternsRisk = 0
+    
+    # Raise warnings if necessary
+    if nFeaturesRisk > 0:
+        warnings.warn(f"FEATURES at risk of being all NaN: {nFeaturesRisk}")
+    if nPatternsRisk > 0:
+        warnings.warn(f"PATTERNS at risk of being all NaN: {nPatternsRisk}")
+
+    return outputX
 
 def imputation_rmse(clean_data, imputed_data, missing_mask):
     """

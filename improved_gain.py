@@ -1,8 +1,27 @@
 import tensorflow as tf
 import numpy as np
+from tensorflow.keras.optimizers.schedules import LearningRateSchedule
 from tqdm import tqdm
 from gain_utils import rounding
 from gain_utils import binary_sampler, uniform_sampler, sample_batch_index
+
+class CosineAnnealingSchedule(LearningRateSchedule):
+    def __init__(self, initial_lr, total_iterations, min_lr=0.0):
+        """
+        Cosine Annealing Learning Rate Scheduler.
+        
+        Args:
+        - initial_lr: Initial learning rate
+        - total_iterations: Total number of iterations
+        - min_lr: Minimum learning rate
+        """
+        self.initial_lr = initial_lr
+        self.total_iterations = total_iterations
+        self.min_lr = min_lr
+
+    def __call__(self, step):
+        cosine_decay = 0.5 * (1 + tf.cos(np.pi * step / self.total_iterations))
+        return self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
 
 class GAINImputer:
     def __init__(self, gain_parameters=None):
@@ -21,7 +40,9 @@ class GAINImputer:
             'batch_size': 4,
             'hint_rate': 0.9,
             'alpha': 1,
-            'iterations': 10000
+            'iterations': 10000,
+            'initial_lr': 0.0001,
+            'min_lr': 1e-6
         }
         
         # Update default parameters with provided parameters
@@ -53,6 +74,8 @@ class GAINImputer:
         hint_rate = self.gain_parameters['hint_rate']
         alpha = self.gain_parameters['alpha']
         iterations = self.gain_parameters['iterations']
+        initial_lr = self.gain_parameters['initial_lr']
+        min_lr = self.gain_parameters['min_lr']
         
         # Other parameters
         no, dim = data_x.shape
@@ -89,10 +112,14 @@ class GAINImputer:
             tf.keras.layers.Dropout(0.3),
             tf.keras.layers.Dense(dim, activation='sigmoid', kernel_initializer='glorot_uniform')
         ])
+
+        # Cosine annealing for learning rate
+        gen_lr_schedule = CosineAnnealingSchedule(initial_lr, iterations, min_lr)
+        disc_lr_schedule = CosineAnnealingSchedule(initial_lr, iterations, min_lr)
         
         # Define optimizers
-        gen_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001, beta_1=0.5, clipnorm=1.0)
-        disc_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001, beta_1=0.5, clipnorm=1.0)
+        gen_optimizer = tf.keras.optimizers.Adam(learning_rate=gen_lr_schedule, beta_1=0.5, clipnorm=1.0)
+        disc_optimizer = tf.keras.optimizers.Adam(learning_rate=disc_lr_schedule, beta_1=0.5, clipnorm=1.0)
         
         @tf.function
         def train_step(X_mb, M_mb, H_mb):
@@ -156,15 +183,15 @@ class GAINImputer:
 
             # Early stopping check
             current_loss = D_loss.numpy() + G_loss.numpy()
-            if current_loss < best_loss:
-                best_loss = current_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
+            # if current_loss < best_loss:
+            #     best_loss = current_loss
+            #     patience_counter = 0
+            # else:
+            #     patience_counter += 1
                 
-            if patience_counter >= patience:
-                print(f"Early stopping triggered at iteration {it + 1}")
-                break
+            # if patience_counter >= patience:
+            #     print(f"Early stopping triggered at iteration {it + 1}")
+            #     break
             
             if it % 1000 == 0:
                 print(f"Iteration {it + 1}/{iterations} - D_loss: {D_loss.numpy():.4f}, G_loss: {G_loss.numpy():.4f}, MSE_loss: {MSE_loss.numpy():.4f}")
@@ -219,8 +246,3 @@ class GAINImputer:
         - Imputed data
         """
         return self.fit(data_x).transform(data_x)
-
-# Example usage
-# imputer = GAINImputer(gain_parameters={'iterations': 5000})
-# imputed_data = imputer.fit_transform(data_x)
-# new_data_imputed = imputer.transform(new_data)
